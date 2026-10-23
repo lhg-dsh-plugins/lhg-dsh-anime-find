@@ -1,0 +1,1570 @@
+window.__ModuleLoader__.load({
+  id: "@cocofhu/anime-find",
+  factory: (require) => {
+    const React = require("react");
+    const h = React.createElement;
+    const { useEffect, useMemo, useState } = React;
+
+    const CSS = `
+.af-root{font-family:inherit;color:var(--dsw-alias-label-primary);max-width:920px}
+.af-hint{color:var(--dsw-alias-label-caption);font-size:12px;line-height:18px;margin:0 0 10px}
+.af-search{display:flex;gap:8px;margin-bottom:12px}
+.af-search input{flex:1;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:10px 12px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit}
+.af-search button,.af-mini{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-button-elevated-fill);color:var(--dsw-alias-label-primary);border-radius:8px;padding:6px 10px;cursor:pointer;font:inherit;font-size:12px}
+.af-mini.primary{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);border-color:transparent}
+.af-week{font-weight:700;font-size:13px;margin:8px 0 6px}
+.af-cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(250px,100%),1fr));gap:10px}
+/* 一次季度搜索会渲染上百张卡片,滚出视口后仍参与每一次布局和栅格化。
+   窗口 resize 和拖动侧边栏会连续触发重排,整条会话被反复重算：130 张卡片实测
+   每次 resize 要 1149ms(浏览器进程满核),跳过视口外卡片后降到 57ms。
+   contain-intrinsic-size 用 auto 记住实测高度,占位值取实测的单卡高度:
+   网格化后宽容器 2 列布局实测均值约 158px(多数 146px,少量标签换行 194px)。 */
+.af-card{position:relative;display:flex;gap:12px;align-items:flex-start;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:12px;cursor:pointer;text-align:left;width:100%;min-width:0;box-sizing:border-box;font:inherit;color:var(--dsw-alias-label-primary);content-visibility:auto;contain-intrinsic-size:auto 160px}
+.af-card:hover{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-interactive-bg-hover)}
+.af-card:focus-visible{outline:2px solid var(--dsw-alias-brand-primary-new-colorprimary-new-color);outline-offset:2px}
+.af-card.busy{cursor:wait}
+/* 卡片行内 pending 态:详情未命中缓存、抽屉仍在加载时,右上角出现小转圈 */
+.af-card-busy{position:absolute;top:8px;right:8px;width:26px;height:26px;border-radius:999px;background:var(--dsw-alias-bg-mask-3);display:grid;place-items:center}
+.af-card-busy .af-spin-inline{width:12px;height:12px;color:var(--dsw-alias-label-primary)}
+/* 封面占位底色统一由下方 .af-imgbox 的主题感知骨架基色提供,
+   此处不再声明 background(否则同特异性下会按规则顺序互相覆盖) */
+.af-cover{width:84px;height:118px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);flex-shrink:0}
+/* 图片骨架(现代 loading 态):封面/头像加载期间 shimmer 扫光占位,load 后淡入,失败显示占位符。
+   配色主题感知(对齐已确认 Demo):占位基色由主文本色 7% 透明推导——浅色主题 ≈rgba(15,23,42,.07)、
+   深色主题 ≈rgba(255,255,255,.055),随 --dsw-alias-label-primary 自动翻转,无需主题分支;
+   扫光高光为白色,透明度须随主题切换(浅色 85% 加强、深色 14% 柔和),dsw 现有 token 无此白色透明度对,
+   故集中定义一处局部 token:浅色值声明在 .af-imgbox,深色经 body[data-ds-dark-theme]
+   (harness 主题权威标记,见 ui-theme/boot-theme)覆盖,替代原先硬编码的白色 42% 扫光——
+   该值扫在浅色主题纯白占位(--dsw-alias-bg-layer-3=#fff)上对比度为零,是骨架不可见的根因。 */
+.af-imgbox{--af-skel-hi:rgba(255,255,255,.85);display:block;position:relative;overflow:hidden;box-sizing:border-box;background:color-mix(in srgb,var(--dsw-alias-label-primary) 7%,transparent)}
+body[data-ds-dark-theme] .af-imgbox{--af-skel-hi:rgba(255,255,255,.14)}
+.af-imgbox img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:inherit;opacity:0;transition:opacity .28s ease}
+.af-imgbox.af-img-ok img{opacity:1}
+.af-imgbox::after{content:"";position:absolute;inset:0;z-index:1;background:linear-gradient(100deg,transparent 20%,var(--af-skel-hi) 50%,transparent 80%);transform:translateX(-100%);animation:af-img-shimmer 1.2s ease-in-out infinite;pointer-events:none}
+.af-imgbox.af-img-ok::after,.af-imgbox.af-img-err::after{display:none}
+@keyframes af-img-shimmer{to{transform:translateX(100%)}}
+.af-img-fb{position:absolute;inset:0;display:grid;place-items:center;color:var(--dsw-alias-label-tertiary);font-size:20px;user-select:none}
+.af-imgbox.af-avatar .af-img-fb{color:inherit;font-size:13px;font-weight:700}
+.af-meta{min-width:0;flex:1;display:flex;flex-direction:column;gap:5px}
+.af-title{font-weight:700;font-size:15px;line-height:1.35;color:var(--dsw-alias-label-primary);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.af-score{color:var(--dsw-alias-state-business-primary);font-weight:800;font-size:16px}
+.af-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:2px}
+.af-tag{font-size:11px;padding:3px 8px;border-radius:999px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;background:var(--dsw-alias-markdown-tag);color:var(--dsw-alias-label-secondary)}
+.af-tag.blue{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary)}
+.af-tag.green{background:var(--dsw-alias-state-success-tertiary);color:var(--dsw-alias-state-success-primary)}
+.af-tag.orange{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-label)}
+.af-tag.pink{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}
+.af-overlay{position:fixed;inset:0;z-index:2147483000;background:var(--dsw-alias-bg-mask-3);display:flex;align-items:center;justify-content:center;padding:24px 16px;box-sizing:border-box}
+.af-drawer{position:relative;width:min(720px,100%);height:min(86vh,840px);max-height:min(86vh,840px);margin:0 auto;background:var(--dsw-alias-bg-layer-1);border:1px solid var(--dsw-alias-border-l2);border-radius:12px;overflow:hidden;display:flex;flex-direction:column}
+.af-close{position:absolute;top:10px;right:10px;width:32px;height:32px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-3);cursor:pointer;font-size:18px;line-height:1;color:var(--dsw-alias-label-secondary);z-index:2}
+.af-close:hover{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-border-l2)}
+.af-head{display:flex;gap:14px;align-items:flex-start;padding:18px 48px 16px 18px;border-bottom:1px solid var(--dsw-alias-border-l1);flex-shrink:0}
+.af-dcover{width:84px;height:118px;border-radius:8px;border:1px solid var(--dsw-alias-border-l1);flex-shrink:0}
+.af-head h2{margin:0 0 6px;font-size:18px;line-height:1.35;color:var(--dsw-alias-label-primary)}
+.af-body{flex:1;min-height:0;overflow:auto;padding:12px 18px 20px;display:flex;flex-direction:column}
+.af-body>*{flex-shrink:0}
+.af-body>.af-load{flex:1;min-height:0}
+.af-original{color:var(--dsw-alias-label-tertiary);font-size:12px;margin:0;line-height:1.4}
+.af-card .af-original{margin:0;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.af-head .af-original{margin:-2px 0 4px}
+.af-rating{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:0;font-size:12px;color:var(--dsw-alias-label-caption)}
+.af-head .af-rating{margin:4px 0 4px}
+.af-rating-score{color:#d97706;font-size:17px;font-weight:800;font-variant-numeric:tabular-nums}
+.af-rating-suffix{color:#d97706;font-size:13px;font-weight:700;font-variant-numeric:tabular-nums}
+.af-stars{color:#f59e0b;letter-spacing:1px;font-size:13px}
+.af-bgm-link,.af-more-link{color:var(--dsw-alias-brand-primary-new-colorprimary-new-color,#2563eb);font-size:12px;text-decoration:none}
+.af-bgm-link:hover,.af-more-link:hover{text-decoration:underline}
+.af-tabs{display:flex;gap:2px;padding:0 18px;border-bottom:1px solid var(--dsw-alias-border-l2);flex-shrink:0}
+.af-tab{appearance:none;border:0;border-bottom:2px solid transparent;background:transparent;padding:10px 12px 9px;cursor:pointer;color:var(--dsw-alias-label-caption);font:inherit;font-size:13px}
+.af-tab.on{color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);border-bottom-color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);font-weight:600}
+.af-badge{display:inline-block;margin-left:5px;padding:1px 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-3);font-size:10px;color:var(--dsw-alias-label-tertiary)}
+.af-tab.on .af-badge{background:var(--dsw-alias-button-ghost-active-fill);color:inherit}
+.af-meta-chips{display:flex;gap:7px;flex-wrap:wrap;margin:0 0 14px}
+.af-meta-chip{font-size:12px;padding:5px 8px;border-radius:7px;background:var(--dsw-alias-bg-layer-2);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-caption)}
+.af-meta-chip b{color:var(--dsw-alias-label-primary);margin-left:4px}
+.af-summary{white-space:pre-wrap;line-height:1.8;font-size:13px;margin:0;color:var(--dsw-alias-label-primary)}
+.af-empty-meta{flex:1;display:flex;align-items:center;justify-content:center;padding:28px 4px;color:var(--dsw-alias-label-caption);font-size:13px;text-align:center}
+.af-comment{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.af-avatar{width:32px;height:32px;flex:0 0 32px;border-radius:50%;object-fit:cover;background:#6366f1;color:#fff;display:grid;place-items:center;font-size:13px;font-weight:700}
+.af-comment-main{min-width:0;flex:1}
+.af-comment-top{display:flex;gap:7px;align-items:center;flex-wrap:wrap;font-size:12px}
+.af-comment-user{font-weight:600}.af-comment-rate{color:#d97706;font-weight:700}.af-comment-time{color:var(--dsw-alias-label-tertiary);margin-left:auto;font-size:11px}
+.af-comment-text{font-size:13px;line-height:1.7;margin:5px 0 0;white-space:pre-wrap;word-break:break-word}
+.af-pills{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px;justify-content:flex-start}
+.af-pill{font:inherit;font-size:12px;padding:5px 13px;border-radius:999px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-caption);cursor:pointer;transition:background .16s ease,border-color .16s ease,color .16s ease}
+.af-pill:hover{background:var(--dsw-alias-bg-layer-2);border-color:var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
+.af-pill.on{background:var(--dsw-alias-button-ghost-active-fill);color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);border-color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);font-weight:600}
+.af-group{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;margin-bottom:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-1);flex-shrink:0}
+.af-group summary{cursor:pointer;padding:11px 14px;display:flex;gap:10px;align-items:center;font-weight:600;background:var(--dsw-alias-bg-layer-2);list-style:none;transition:background .16s ease;min-width:0}
+.af-group summary::-webkit-details-marker{display:none}
+.af-group summary:hover{background:var(--dsw-alias-bg-layer-3)}
+.af-sub{font-weight:400;color:var(--dsw-alias-label-tertiary);font-size:12px;margin-left:auto;flex-shrink:0}
+.af-ep{border-top:1px solid var(--dsw-alias-border-l2)}
+.af-ep:first-of-type{border-top:0}
+.af-ep-h{display:flex;align-items:center;gap:8px;padding:12px 14px 6px;font-size:12px;font-weight:600;color:var(--dsw-alias-label-tertiary);letter-spacing:.04em}
+.af-ep-h::after{content:"";flex:1;height:1px;background:var(--dsw-alias-border-l2)}
+.af-item{padding:9px 14px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;border-radius:8px;margin:0 6px;transition:background .14s ease}
+.af-item:hover{background:var(--dsw-alias-bg-layer-2)}
+.af-item + .af-item{border-top:1px solid var(--dsw-alias-border-l2)}
+.af-item-raw{margin:3px 0 0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:1.4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.af-chips{display:flex;flex-wrap:wrap;gap:6px}
+.af-chip{font-size:11px;line-height:1;padding:4px 8px;border-radius:6px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-caption);border:1px solid transparent}
+.af-chip.hi{background:var(--dsw-alias-button-ghost-active-fill);color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);border-color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);font-weight:600}
+.af-facts{display:flex;align-items:center;gap:7px;flex-wrap:wrap;margin:5px 0 0;color:var(--dsw-alias-label-caption);font-size:12px}
+.af-facts .af-size{color:var(--dsw-alias-label-primary);font-weight:600;font-variant-numeric:tabular-nums}
+.af-facts-separator{color:var(--dsw-alias-label-tertiary)}
+.af-btns{display:flex;gap:8px;flex-shrink:0;align-items:center}
+.af-item .af-mini{display:inline-flex;align-items:center;justify-content:center;border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-caption);text-decoration:none;transition:background .16s ease,border-color .16s ease,color .16s ease}
+.af-item .af-mini:hover{border-color:var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.af-item .af-mini.primary{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-caption);border-color:var(--dsw-alias-border-l2)}
+.af-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:var(--dsw-alias-toast-bg);color:var(--dsw-alias-label-primary-foreground);padding:10px 16px;border-radius:999px;font-size:13px;z-index:2147483646}
+.af-modal-mask{position:fixed;inset:0;z-index:2147483645;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(16,28,36,.42);backdrop-filter:blur(2px)}
+.af-modal{width:min(420px,100%);background:var(--dsw-alias-bg-layer-1, #fff);color:var(--dsw-alias-label-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,.2);padding:18px}
+.af-modal h3{margin:0 0 8px;font-size:16px;font-weight:650}
+.af-modal p{margin:0 0 14px;color:var(--dsw-alias-label-secondary);font-size:13px;line-height:1.55}
+.af-modal code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;word-break:break-all}
+.af-modal-actions{display:flex;justify-content:flex-end;gap:8px}
+.af-modal-cancel,.af-modal-confirm{appearance:none;border-radius:8px;padding:6px 14px;font:inherit;font-size:13px;cursor:pointer}
+.af-modal-cancel{background:var(--dsw-alias-button-elevated-fill);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
+.af-modal-confirm{background:var(--dsw-alias-button-primary-fill);border:1px solid transparent;color:var(--dsw-alias-label-primary-foreground)}
+.af-modal-confirm:disabled,.af-modal-cancel:disabled{opacity:.55;cursor:wait}
+.af-err{color:var(--dsw-alias-state-error-primary);font-size:12px;margin:8px 0}
+.af-tool{margin:4px 0 8px}
+.af-fade{animation:af-in .18s ease}
+.af-inflow{position:relative;width:100%;height:min(72vh,760px);max-height:min(72vh,760px);margin:4px 0 8px}
+.af-load{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px 8px 12px;min-height:0;box-sizing:border-box}
+/* 轻量变体:紧凑区域(播放器面板等)只保留转圈+文案,不铺骨架行 */
+.af-load.af-load-light{gap:10px;padding:20px 8px}
+.af-load-light .af-skel{display:none}
+.af-spin{width:28px;height:28px;border:3px solid var(--dsw-alias-bg-skeleton);border-top-color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);border-radius:50%;animation:af-spin .7s linear infinite}
+.af-spin-inline{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:af-spin .7s linear infinite;display:inline-block;flex:none;vertical-align:-2px}
+.af-inline-busy{display:inline-flex;align-items:center;gap:6px;font:inherit;color:inherit}
+.af-load-text{color:var(--dsw-alias-label-caption);font-size:13px}
+.af-skel{width:100%;display:flex;flex-direction:column;gap:8px;margin-top:4px}
+.af-skel-row{height:46px;border-radius:8px;background:var(--dsw-alias-bg-skeleton);background-size:200% 100%;animation:af-shimmer 1.2s ease infinite}
+@keyframes af-in{from{opacity:0}to{opacity:1}}
+@keyframes af-spin{to{transform:rotate(360deg)}}
+@keyframes af-shimmer{from{background-position:200% 0}to{background-position:-200% 0}}
+.af-cfg-item{list-style:none;margin:0;padding:0;min-width:0}
+.af-cfg{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);border-radius:12px;overflow:hidden;box-sizing:border-box;width:100%;min-width:0}
+.af-cfg[open]{background:var(--dsw-alias-bg-layer-2)}
+.af-cfg-h{display:flex;align-items:center;gap:12px;cursor:pointer;list-style:none;padding:14px 16px;box-sizing:border-box;min-width:0}
+.af-cfg-h::-webkit-details-marker,.af-cfg-h::marker{display:none;content:none}
+.af-cfg-t{flex-direction:column;flex:1;gap:4px;min-width:0;display:flex}
+.af-cfg-n{font-size:15px;font-weight:600;line-height:1.4}
+.af-cfg-d{color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:1.5}
+.af-cfg-ch{color:var(--dsw-alias-label-tertiary);flex:none;width:14px;height:14px;margin-left:auto;transition:transform .16s;display:block;pointer-events:none;overflow:visible}
+.af-cfg-ch-open{transform:rotate(180deg)}
+.af-cfg-b{border-top:1px solid var(--dsw-alias-border-l2);margin:0 16px;padding:8px 0 12px}
+.af-cfg-f{display:flex;flex-direction:column;gap:6px;padding:10px 0;border-top:1px solid var(--dsw-alias-border-l1)}
+.af-cfg-f:first-child{border-top:0}
+.af-cfg-f label{font-size:13px;font-weight:500;color:var(--dsw-alias-label-secondary)}
+.af-cfg-f input[type=text],.af-cfg-f input[type=number]{border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);height:34px;font:inherit;border-radius:8px;padding:0 12px;font-size:13px}
+.af-cfg-hint{margin:0;color:var(--dsw-alias-label-caption);font-size:12px}
+.af-cfg-warning{margin:0;color:var(--dsw-alias-state-warn-label);font-size:12px;line-height:1.5}.af-rule-list{display:flex;flex-direction:column;gap:6px}.af-rule-row{display:flex;align-items:center;gap:8px;padding:8px;border:1px solid var(--dsw-alias-border-l1);border-radius:8px;font-size:12px}.af-rule-row label{display:flex;gap:6px;align-items:center;cursor:pointer;flex:1}.af-rule-delete{margin-left:auto;color:var(--dsw-alias-state-error-primary)}
+.af-cfg-src{display:flex;flex-wrap:wrap;gap:10px 16px}
+.af-cfg-src label{display:flex;gap:6px;align-items:center;font-weight:400;cursor:pointer}
+.af-cfg-ft{border-top:1px solid var(--dsw-alias-border-l2);justify-content:flex-end;gap:8px;padding:12px 0 4px;display:flex}
+/* 保存中整个表单区置灰并禁止编辑,按钮文案切为「保存中…」+行内转圈 */
+.af-cfg-b[aria-busy="true"] .af-cfg-f input,.af-cfg-b[aria-busy="true"] .af-cfg-f textarea{opacity:.55;pointer-events:none}
+.af-cfg-ft button{appearance:none;font:inherit;cursor:pointer;border-radius:8px;padding:5px 14px;font-size:13px}
+.af-cfg-save{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);border:1px solid transparent}
+.af-cfg-save:disabled,.af-cfg-disc:disabled{opacity:.4;cursor:default}
+.af-cfg-disc{background:var(--dsw-alias-button-elevated-fill);border:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-secondary)}
+.af-cfg-err{color:var(--dsw-alias-state-error-primary);flex:1;margin:0;font-size:12px}
+.af-version{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:14px;background:var(--dsw-alias-bg-layer-3)}
+.af-version-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.af-version-k{font-size:12px;color:var(--dsw-alias-label-tertiary);margin-bottom:3px}
+.af-version-v{font-size:20px;font-weight:650;font-variant-numeric:tabular-nums}
+.af-version-tag{display:inline-block;margin-top:6px;padding:3px 8px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-caption);font-size:11px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.af-update-check,.af-update-copy{appearance:none;border-radius:8px;padding:6px 12px;font:inherit;font-size:13px;cursor:pointer}
+.af-update-check{border:1px solid transparent;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}
+.af-update-copy{border:1px solid transparent;background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}
+.af-update-check:disabled,.af-update-copy:disabled{opacity:.55;cursor:wait}
+.af-update-status{margin-top:12px;padding:10px 12px;border-radius:8px;font-size:12px;line-height:1.5}
+.af-update-status.checking{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary)}
+.af-update-status.upToDate{background:var(--dsw-alias-state-success-tertiary);color:var(--dsw-alias-state-success-primary)}
+.af-update-status.updateAvailable,.af-update-status.localInstallRestricted{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-label)}
+.af-update-status.noRelease{background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary)}
+.af-update-status.failed{background:var(--dsw-alias-interactive-bg-hover-danger);color:var(--dsw-alias-state-error-primary)}
+.af-update-status.updating{background:var(--dsw-alias-state-business-tertiary);color:var(--dsw-alias-state-business-primary);display:flex;align-items:center;gap:8px}
+.af-update-busy{display:inline-flex;align-items:center;gap:8px}
+.af-update-compare{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:center;margin-top:12px}
+.af-update-pill{border:1px solid var(--dsw-alias-border-l2);border-radius:8px;padding:8px 10px;font-variant-numeric:tabular-nums}
+.af-update-pill span{display:block;font-size:11px;color:var(--dsw-alias-label-tertiary)}
+.af-update-pill strong{display:block;margin-top:2px;font-size:14px}
+.af-update-cmd-label{margin-top:12px;font-size:12px;color:var(--dsw-alias-label-tertiary)}
+.af-update-cmd{margin-top:5px;padding:10px 12px;border-radius:8px;background:var(--dsw-alias-toast-bg);color:var(--dsw-alias-label-primary-foreground);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;line-height:1.5;word-break:break-all}
+.af-update-actions{display:flex;align-items:center;gap:10px;margin-top:10px}
+.af-update-restart{margin:10px 0 0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:1.5}
+.af-search-tabs{display:flex;gap:4px;border-bottom:1px solid var(--dsw-alias-border-l2);margin:0 0 12px}
+.af-search-tab{appearance:none;border:0;border-bottom:2px solid transparent;background:transparent;padding:9px 12px;cursor:pointer;color:var(--dsw-alias-label-caption);font:inherit;font-size:13px}
+.af-search-tab.on{color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);border-bottom-color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);font-weight:600}
+.af-stream-note,.af-stream-empty{border:1px solid var(--dsw-alias-border-l2);border-radius:10px;padding:11px 12px;margin:0 0 12px;font-size:12px;line-height:1.6;color:var(--dsw-alias-label-caption);background:var(--dsw-alias-bg-layer-2)}
+.af-stream-note{color:var(--dsw-alias-state-business-primary)}
+.af-stream-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.af-stream-card{min-height:142px;display:flex;flex-direction:column;align-items:stretch;gap:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-2);padding:13px;text-align:left;color:var(--dsw-alias-label-primary);font:inherit;cursor:pointer;transition:border-color .16s,box-shadow .16s,transform .16s}
+.af-stream-card.on{border-color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);box-shadow:0 0 0 2px var(--dsw-alias-button-ghost-active-fill);background:var(--dsw-alias-bg-layer-1)}
+.af-stream-card:hover{background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);transform:translateY(-1px)}
+.af-stream-card-top{display:flex;align-items:flex-start;gap:8px;min-width:0}.af-stream-card-id{min-width:0;flex:1}.af-stream-title{font-weight:700;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.af-stream-rule{font-size:12px;color:var(--dsw-alias-label-tertiary);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.af-stream-state{flex:none;border-radius:999px;padding:3px 7px;font-size:10px;font-weight:600;line-height:1.4;background:var(--dsw-alias-state-success-tertiary);color:var(--dsw-alias-state-success-primary)}.af-stream-state.limited{background:var(--dsw-alias-state-warn-tertiary);color:var(--dsw-alias-state-warn-label)}.af-stream-facts{font-size:12px;color:var(--dsw-alias-label-caption);margin:0}.af-stream-card-foot{border-top:1px solid var(--dsw-alias-border-l1);padding-top:9px;margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:11px;color:var(--dsw-alias-label-tertiary)}.af-stream-card-go{color:var(--dsw-alias-brand-primary-new-colorprimary-new-color);font-weight:600;white-space:nowrap}
+.af-player-panel{margin-top:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2)}.af-player-head{padding:12px;border-bottom:1px solid var(--dsw-alias-border-l2);font-size:13px;font-weight:600}.af-episodes{padding:12px;display:flex;gap:7px;flex-wrap:wrap}.af-episode{font:inherit;font-size:12px;padding:5px 9px;border-radius:7px;cursor:pointer;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary)}.af-episode.on{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground);border-color:transparent}.af-video-wrap{position:relative;width:100%;background:#0f172a}
+.af-video{display:block;width:100%;aspect-ratio:16/9;background:#0f172a}
+/* video 初始化/切集缓冲遮罩:pointer-events:none 保证原生控制条可点,不放交互元素 */
+.af-video-mask{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;background:rgba(15,23,42,.55);color:#e2e8f0;font-size:13px;pointer-events:none}
+.af-video-mask .af-spin-inline{width:22px;height:22px;border-width:3px}
+.af-video-holder{display:flex;width:100%;aspect-ratio:16/9;align-items:center;justify-content:center;gap:10px;color:#94a3b8;font-size:13px;background:#0f172a}
+.af-video-holder .af-spin-inline{width:20px;height:20px;border-width:3px;color:#cbd5e1}.af-player-actions{padding:10px 12px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}.af-player-actions a.af-mini{display:inline-flex;align-items:center;text-decoration:none;color:var(--dsw-alias-label-primary)}.af-player-actions button:disabled{cursor:not-allowed;opacity:.45}.af-player-error{padding:14px;color:var(--dsw-alias-state-error-primary);font-size:12px;line-height:1.6}.af-player-empty{margin:2px 12px 14px;padding:22px 14px;border:1px dashed var(--dsw-alias-border-l2);border-radius:10px;text-align:center;color:var(--dsw-alias-label-caption);font-size:13px;line-height:1.7}.af-player-empty b{display:block;color:var(--dsw-alias-label-primary);margin-bottom:4px}.af-player-empty .af-mini{margin-top:10px}
+@media (max-width:560px){.af-update-compare{grid-template-columns:1fr}.af-update-arrow{display:none}}
+`;
+
+    const CSS_ID = "anime-find-style";
+    function ensureCss() {
+      if (typeof document === "undefined") return () => {};
+      let s = document.getElementById(CSS_ID);
+      if (!s) {
+        s = document.createElement("style");
+        s.id = CSS_ID;
+        document.head.appendChild(s);
+      }
+      s.textContent = CSS;
+      return () => {};
+    }
+
+    const fallbackPortal = (node) => node;
+    let createPortal = fallbackPortal;
+    try {
+      const rd = require("react-dom");
+      if (rd && typeof rd.createPortal === "function") createPortal = rd.createPortal;
+    } catch { /* overlay still works without portal */ }
+
+    function placeholder(title) {
+      return "data:image/svg+xml," + encodeURIComponent(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="180" height="260"></svg>',
+      );
+    }
+
+    const PLUGIN_SCRIPT_PATH = "/plugins/anime-find/client.js";
+
+    function prefixFromPluginUrl(src) {
+      try {
+        const path = new URL(src, typeof location !== "undefined" ? location.href : "http://local/").pathname;
+        const idx = path.indexOf(PLUGIN_SCRIPT_PATH);
+        if (idx <= 0) return "";
+        return path.slice(0, idx).replace(/\/+$/, "");
+      } catch { return ""; }
+    }
+
+    function prefixFromPathname(pathname) {
+      const first = String(pathname || "/").split("/").filter(Boolean)[0];
+      if (!first || !/^[A-Za-z0-9_-]{16,}$/.test(first)) return "";
+      return "/" + first;
+    }
+
+    function sitePrefix() {
+      if (typeof document !== "undefined") {
+        for (const s of document.getElementsByTagName("script")) {
+          const prefix = s.src ? prefixFromPluginUrl(s.src) : "";
+          if (prefix) return prefix;
+        }
+        const href = document.querySelector("base")?.getAttribute("href");
+        if (href) {
+          try {
+            const path = new URL(href, location.href).pathname.replace(/\/+$/, "");
+            if (path && path !== "/") return path;
+          } catch { /* ignore malformed base href */ }
+        }
+      }
+      try {
+        for (const e of performance.getEntriesByType("resource")) {
+          const prefix = e.name ? prefixFromPluginUrl(e.name) : "";
+          if (prefix) return prefix;
+        }
+      } catch { /* performance API unavailable */ }
+      return typeof location !== "undefined" ? prefixFromPathname(location.pathname) : "";
+    }
+
+    function pluginUrl(path) {
+      const suffix = path.startsWith("/") ? path : "/" + path;
+      return sitePrefix() + suffix;
+    }
+
+    function coverSrc(url, title) {
+      if (!url) return placeholder(title);
+      if (url.startsWith("data:")) return url;
+      return pluginUrl("/anime-find/cover") + "?url=" + encodeURIComponent(url);
+    }
+
+    async function api(method, payload) {
+      const res = await fetch(pluginUrl("/anime-find"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method, ...payload }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body.ok === false) throw new Error(body.error || "HTTP " + res.status);
+      return body;
+    }
+
+    async function copyText(text) {
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(text);
+          return true;
+        }
+      } catch { /* use the legacy fallback */ }
+      try {
+        const input = document.createElement("input");
+        input.value = text;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.left = "-9999px";
+        document.body.appendChild(input);
+        input.select();
+        const copied = document.execCommand("copy");
+        document.body.removeChild(input);
+        return copied;
+      } catch { return false; }
+    }
+
+    function Toast({ text, onDone }) {
+      useEffect(() => {
+        const t = setTimeout(onDone, 1600);
+        return () => clearTimeout(t);
+      }, [text, onDone]);
+      return h("div", { className: "af-toast" }, text);
+    }
+
+    function UpdateConfirmDialog({ open, command, busy, onCancel, onConfirm }) {
+      if (!open) return null;
+      const dialog = h("div", {
+        className: "af-modal-mask",
+        role: "presentation",
+        onClick: (e) => { if (e.target === e.currentTarget && !busy) onCancel(); },
+      },
+        h("div", {
+          className: "af-modal",
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-labelledby": "af-update-confirm-title",
+        },
+          h("h3", { id: "af-update-confirm-title" }, "确认执行更新？"),
+          h("p", null,
+            "将执行 ",
+            h("code", null, command || "dsh plugin --profile web update @cocofhu/anime-find"),
+            "，成功后自动重启 dsh web 并跳转到新地址。更新期间当前页面会断开。",
+          ),
+          h("div", { className: "af-modal-actions" },
+            h("button", { type: "button", className: "af-modal-cancel", disabled: busy, onClick: onCancel }, "取消"),
+            h("button", { type: "button", className: "af-modal-confirm", disabled: busy, onClick: onConfirm },
+              busy
+                ? h("span", { className: "af-update-busy" },
+                    h("span", { className: "af-spin-inline", "aria-hidden": "true" }),
+                    "更新中…",
+                  )
+                : "确认更新",
+            ),
+          ),
+        ),
+      );
+      return typeof document !== "undefined" ? createPortal(dialog, document.body) : dialog;
+    }
+
+    function ratingStars(score) {
+      const filled = Math.round(Math.min(5, Math.max(0, Number(score) / 2)));
+      return "★".repeat(filled) + "☆".repeat(5 - filled);
+    }
+
+    function RatingRow({ score, count }) {
+      if (score == null || !Number.isFinite(Number(score))) return null;
+      const value = Number(score);
+      return h("div", { className: "af-rating" },
+        h("span", { className: "af-rating-score" }, value.toFixed(1)),
+        h("span", { className: "af-rating-suffix" }, "/10"),
+        h("span", { className: "af-stars", "aria-label": `${value.toFixed(1)}/10` }, ratingStars(value)),
+        count ? h("span", null, `${Number(count).toLocaleString()} 人评分`) : null,
+      );
+    }
+
+    const TAG_TONES = ["green", "pink", "blue"];
+
+    function Tags({ item, labels }) {
+      const fromLabels = (labels || item.tags || []).map(String).map((t) => t.trim()).filter(Boolean).slice(0, 3);
+      const tags = fromLabels.length
+        ? fromLabels.map((label, i) => [TAG_TONES[i % TAG_TONES.length], label])
+        : [
+          item.season && ["blue", item.season],
+          ...(item.sources || []).map((source) => ["green", source]),
+          item.subgroup && ["", item.subgroup],
+          item.resourceCount > 0 && ["orange", `${item.resourceCount} 资源`],
+          item.format && ["pink", String(item.format).toLowerCase()],
+        ].filter(Boolean).slice(0, 3);
+      if (!tags.length) return null;
+      return h(
+        "div",
+        { className: "af-tags" },
+        tags.map((t, i) => h("span", { key: i, className: "af-tag " + t[0] }, t[1])),
+      );
+    }
+
+    function needsBangumi(item) {
+      return item && (!item.bgmId || item.score == null || !(item.tags && item.tags.length));
+    }
+
+    function mergeBangumi(item, extra) {
+      if (!extra) return item;
+      return {
+        ...item,
+        bgmId: extra.bgmId || item.bgmId,
+        nameOrig: extra.nameOrig || item.nameOrig,
+        score: extra.score ?? item.score,
+        ratingCount: extra.ratingCount ?? item.ratingCount,
+        tags: extra.tags?.length ? extra.tags : item.tags,
+      };
+    }
+
+    function Cards({ items, onOpen, pendingId, onPrefetch, hideEmpty }) {
+      const [extra, setExtra] = useState({});
+      const ids = (items || []).map((it) => it.id).join("\n");
+      useEffect(() => {
+        let live = true;
+        const missing = (items || []).filter(needsBangumi);
+        if (!missing.length) return () => { live = false; };
+        Promise.all(missing.map((it) => api("bangumiCard", { id: it.id, title: it.title, bgmId: it.bgmId }).then(
+          (data) => ({ id: it.id, data }),
+          () => null,
+        ))).then((rows) => {
+          if (!live) return;
+          const next = {};
+          for (const row of rows) {
+            if (row?.data && (row.data.bgmId || row.data.score != null || row.data.tags?.length)) next[row.id] = row.data;
+          }
+          if (Object.keys(next).length) setExtra((prev) => ({ ...prev, ...next }));
+        });
+        return () => { live = false; };
+      }, [ids]);
+      if (!items?.length) return hideEmpty ? null : h("div", { className: "af-hint" }, "没有结果");
+      return h(
+        "div",
+        { className: "af-cards" },
+        items.map((raw) => {
+          const item = mergeBangumi(raw, extra[raw.id]);
+          const score = item.score;
+          return h(
+            "div",
+            {
+              key: item.id,
+              role: "button",
+              tabIndex: 0,
+              className: "af-card" + (pendingId === item.id ? " busy" : ""),
+              onMouseEnter: () => onPrefetch?.(item),
+              onFocus: () => onPrefetch?.(item),
+              onClick: () => onOpen(item),
+              onKeyDown: (e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  onOpen(item);
+                }
+              },
+            },
+            pendingId === item.id ? h("span", { className: "af-card-busy" },
+              h("span", { className: "af-spin-inline", "aria-hidden": "true" }),
+            ) : null,
+            h(CoverImg, { className: "af-cover", src: coverSrc(item.cover, item.title) }),
+            h("div", { className: "af-meta" },
+              h("div", { className: "af-title", title: item.title }, item.title),
+              item.nameOrig ? h("div", { className: "af-original" }, item.nameOrig) : null,
+              score != null ? h(RatingRow, { score, count: item.ratingCount }) : null,
+              h(Tags, { item }),
+            ),
+          );
+        }),
+      );
+    }
+
+    function releaseView(it, animeTitle) {
+      if (it.displayTitle) return { heading: it.displayTitle, tags: it.tags || [], raw: it.title, episode: it.episode };
+      const raw = String(it.title || "");
+      const short = raw
+        .replace(/\([^)]+\)/g, " ")
+        .replace(/[【\[][^】\]]+[】\]]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const heading = short.slice(0, 48) || raw.slice(0, 48);
+      const ep = String(it.episode || "").trim()
+        || (heading.match(/第\s*([\d.]+(?:\s*[–-]\s*[\d.]+)?)\s*集/) || [])[1]
+        || (heading.match(/S\d+E([\d.]+)/i) || [])[1];
+      return { heading, tags: it.tags || [], raw, episode: ep };
+    }
+
+    function groupByEpisode(items, animeTitle) {
+      const order = [];
+      const map = new Map();
+      for (const it of items || []) {
+        const view = releaseView(it, animeTitle);
+        const key = view.episode ? "e:" + String(view.episode).replace(/\s/g, "") : "t:" + (it.title || view.heading);
+        if (!map.has(key)) {
+          map.set(key, { heading: view.heading, items: [] });
+          order.push(key);
+        }
+        map.get(key).items.push({ it, view });
+      }
+      return order.map((k) => map.get(k));
+    }
+
+    const KEY_RESOLUTION_TAGS = new Set(["720p", "1080p", "2160p", "4K"]);
+
+    function ReleaseRow({ it, view, onCopied }) {
+      return h("div", { className: "af-item", title: view.raw },
+        h("div", { style: { minWidth: 0 } },
+          view.tags.length ? h("div", { className: "af-chips" },
+            view.tags.map((t) => h("span", { key: t, className: "af-chip" + (KEY_RESOLUTION_TAGS.has(t) ? " hi" : "") }, t)),
+          ) : null,
+          h("div", { className: "af-facts" },
+            it.size ? h("span", { className: "af-size" }, it.size) : null,
+            it.size && it.createdAt ? h("span", { className: "af-facts-separator", "aria-hidden": "true" }, "·") : null,
+            it.createdAt ? h("span", null, it.createdAt) : null,
+          ),
+          h("div", { className: "af-item-raw" }, view.raw),
+        ),
+        h("div", { className: "af-btns" },
+          it.magnet ? h("button", {
+            type: "button",
+            className: "af-mini",
+            onClick: async () => {
+              await copyText(it.magnet);
+              onCopied();
+            },
+          }, "复制磁力") : null,
+          it.torrent ? h("a", { className: "af-mini", href: it.torrent, target: "_blank", rel: "noreferrer" }, "种子") : null,
+        ),
+      );
+    }
+
+    // 统一 loading 构件:默认(转圈+文案+骨架行)与轻量(light,仅转圈+文案)两档。
+    // 容器 role=status / aria-live=polite,装饰转圈 aria-hidden,文案一律以省略号结尾。
+    function LoadingBody({ text, light }) {
+      return h("div", { className: "af-load" + (light ? " af-load-light" : ""), role: "status", "aria-live": "polite" },
+        h("div", { className: "af-spin", "aria-hidden": "true" }),
+        h("div", { className: "af-load-text" }, text || "正在加载…"),
+        h("div", { className: "af-skel", "aria-hidden": "true" },
+          h("div", { className: "af-skel-row" }),
+          h("div", { className: "af-skel-row" }),
+          h("div", { className: "af-skel-row" }),
+          h("div", { className: "af-skel-row" }),
+        ),
+      );
+    }
+
+    /* 图片统一骨架构件:封面/头像等图片在下载期间显示 shimmer 扫光占位,
+       load 后淡入,失败显示占位符,避免「空白方块」造成突兀的加载体验。 */
+    function CoverImg({ className, src, alt, style, fallback }) {
+      const [state, setState] = useState(src ? "loading" : "error");
+      useEffect(() => { setState(src ? "loading" : "error"); }, [src]);
+      return h("span", {
+        className: "af-imgbox " + (className || "") + (state === "ok" ? " af-img-ok" : state === "error" ? " af-img-err" : ""),
+        style,
+      },
+        src ? h("img", {
+          src, alt: alt || "", loading: "lazy", draggable: false,
+          onLoad: () => setState("ok"),
+          onError: () => setState("error"),
+        }) : null,
+        state === "error" ? h("span", { className: "af-img-fb", "aria-hidden": "true" }, fallback ?? "🎞") : null,
+      );
+    }
+
+    // 行内忙碌构件:af-spin-inline + 文案,供按钮内与卡片行内复用。
+    function InlineBusy({ text }) {
+      return h("span", { className: "af-inline-busy", role: "status", "aria-live": "polite" },
+        h("span", { className: "af-spin-inline", "aria-hidden": "true" }),
+        text ? h("span", null, text) : null,
+      );
+    }
+
+    function avatarColor(nickname) {
+      const colors = ["#5b7cfa", "#20a97c", "#e0668e", "#f0973a", "#7f6bd6"];
+      let hash = 0;
+      for (const char of String(nickname || "")) hash = ((hash * 31) + char.charCodeAt(0)) | 0;
+      return colors[Math.abs(hash) % colors.length];
+    }
+
+    function DetailCard({ item, detail, meta, loading, metaLoading, onClose }) {
+      const [source, setSource] = useState("all");
+      const [toast, setToast] = useState("");
+      const [tab, setTab] = useState("resources");
+      useEffect(() => {
+        setSource("all");
+        setTab("resources");
+      }, [item.id]);
+      const groups = useMemo(() => {
+        const gs = detail?.groups || [];
+        if (source === "all") return gs;
+        return gs.filter((g) => g.source === source);
+      }, [detail, source]);
+      const sources = ["all", ...new Set((detail?.groups || []).map((g) => g.source).filter(Boolean))];
+      const intro = meta?.meta;
+      const comments = meta?.comments || [];
+      const bangumiPageUrl = intro?.pageUrl || meta?.pageUrl || (item.bgmId ? `https://bgm.tv/subject/${item.bgmId}` : "");
+      const resourceCount = (detail?.groups || []).reduce((total, group) => total + (group.items?.length || 0), 0);
+      const hasBangumi = !!(item.bgmId || detail?.bgmId || bangumiPageUrl);
+      const tabs = [
+        { id: "intro", label: "介绍" },
+        { id: "comments", label: "短评", count: comments.length || undefined },
+        { id: "resources", label: "资源", count: resourceCount || undefined },
+      ];
+      const score = intro?.score ?? item.score;
+      const title = detail?.title || item.title;
+      const nameOrig = intro?.nameOrig || item.nameOrig;
+      const introLoading = hasBangumi && metaLoading && !intro;
+      const commentsLoading = hasBangumi && metaLoading && !comments.length;
+      let body;
+      if (tab === "intro") {
+        body = introLoading
+          ? h(LoadingBody, { text: "正在加载介绍…" })
+          : intro
+            ? h("div", null,
+              intro.chips?.length ? h("div", { className: "af-meta-chips" },
+                intro.chips.map((chip) => h("span", { className: "af-meta-chip", key: chip.label }, chip.label, h("b", null, chip.value))),
+              ) : null,
+              intro.summary ? h("p", { className: "af-summary" }, intro.summary) : h("div", { className: "af-empty-meta" }, "该条目暂未提供介绍。"),
+              h("p", null, h("a", { className: "af-more-link", href: intro.pageUrl, target: "_blank", rel: "noreferrer" }, "在 Bangumi 查看条目")),
+            )
+            : h("div", { className: "af-empty-meta" }, "暂无 Bangumi 介绍。");
+      } else if (tab === "comments") {
+        body = commentsLoading
+          ? h(LoadingBody, { text: "正在加载短评…" })
+          : comments.length
+            ? h("div", null,
+              comments.map((comment, index) => h("div", { className: "af-comment", key: `${comment.nickname}-${index}` },
+                comment.avatarUrl
+                  ? h(CoverImg, {
+                    className: "af-avatar",
+                    src: comment.avatarUrl,
+                    style: { background: avatarColor(comment.nickname) },
+                    fallback: (comment.nickname || "B").slice(0, 1),
+                  })
+                  : h("span", { className: "af-avatar", style: { background: avatarColor(comment.nickname) } }, (comment.nickname || "B").slice(0, 1)),
+                h("div", { className: "af-comment-main" },
+                  h("div", { className: "af-comment-top" },
+                    h("span", { className: "af-comment-user" }, comment.nickname),
+                    comment.rate ? h("span", { className: "af-comment-rate" }, `★ ${comment.rate}`) : null,
+                    comment.updatedAt ? h("span", { className: "af-comment-time" }, comment.updatedAt) : null,
+                  ),
+                  h("p", { className: "af-comment-text" }, comment.comment),
+                ),
+              )),
+              bangumiPageUrl ? h("p", null, h("a", { className: "af-more-link", href: `${bangumiPageUrl}/comments`, target: "_blank", rel: "noreferrer" }, "在 Bangumi 查看更多")) : null,
+            )
+            : h("div", { className: "af-empty-meta" }, "暂无短评。");
+      } else {
+        body = loading
+          ? h(LoadingBody, { text: "正在加载字幕组与磁力…" })
+          : [
+            sources.length > 1 ? h("div", { key: "pills", className: "af-pills" },
+              sources.map((s) => h("button", {
+                key: s,
+                type: "button",
+                className: "af-pill" + (source === s ? " on" : ""),
+                onClick: () => setSource(s),
+              }, s === "all" ? "全部来源" : s)),
+            ) : null,
+            groups.map((g, idx) => h("details", { key: g.label + g.source + idx, className: "af-group", open: idx === 0 },
+              h("summary", null,
+                g.label || "未知字幕组",
+                h("span", { className: "af-sub" }, `${g.source || ""} · ${g.updateDay || ""} · ${g.items?.length || 0} 条`),
+              ),
+              (groupByEpisode(g.items || [], detail?.title || item.title).map((bucket, bi) =>
+                h("div", { key: bucket.heading + bi, className: "af-ep" },
+                  h("div", { className: "af-ep-h" }, bucket.heading),
+                  bucket.items.map(({ it, view }, i) => h(ReleaseRow, {
+                    key: i,
+                    it,
+                    view,
+                    onCopied: () => setToast("已复制磁力链接"),
+                  })),
+                ),
+              )),
+            )),
+            !groups.length ? h("div", { key: "empty", className: "af-empty-meta" }, "该来源暂无资源") : null,
+          ];
+      }
+      return h("div", { className: "af-drawer" + (onClose ? " af-fade" : " af-inflow"), role: onClose ? "dialog" : undefined, "aria-modal": onClose ? "true" : undefined },
+        onClose ? h("button", { type: "button", className: "af-close", onClick: onClose, "aria-label": "关闭" }, "×") : null,
+        h("div", { className: "af-head" },
+          h(CoverImg, { className: "af-dcover", src: coverSrc(detail?.cover || item.cover, item.title) }),
+          h("div", { style: { minWidth: 0, flex: 1 } },
+            h("h2", null, title),
+            nameOrig ? h("div", { className: "af-original" }, nameOrig) : null,
+            h(RatingRow, { score, count: intro?.ratingCount ?? item.ratingCount }),
+            bangumiPageUrl ? h("a", { className: "af-bgm-link", href: bangumiPageUrl, target: "_blank", rel: "noreferrer" }, "Bangumi 条目") : null,
+            h(Tags, { item: { ...item, ...(detail || {}) }, labels: intro?.tags }),
+          ),
+        ),
+        h("div", { className: "af-tabs", role: "tablist" },
+          tabs.map((entry) => h("button", {
+            key: entry.id,
+            type: "button",
+            role: "tab",
+            className: "af-tab" + (tab === entry.id ? " on" : ""),
+            "aria-selected": tab === entry.id,
+            onClick: () => setTab(entry.id),
+          }, entry.label, entry.count ? h("span", { className: "af-badge" }, entry.count) : null)),
+        ),
+        h("div", { className: "af-body", "aria-busy": tab === "intro" ? introLoading : tab === "comments" ? commentsLoading : !!loading }, body),
+        toast ? h(Toast, { text: toast, onDone: () => setToast("") }) : null,
+      );
+    }
+
+    function Drawer({ item, detail, meta, loading, metaLoading, onClose }) {
+      useEffect(() => {
+        const prev = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+        const onKey = (e) => { if (e.key === "Escape") onClose(); };
+        window.addEventListener("keydown", onKey);
+        return () => {
+          document.body.style.overflow = prev;
+          window.removeEventListener("keydown", onKey);
+        };
+      }, [onClose]);
+      const portaled = createPortal !== fallbackPortal;
+      const hostRef = React.useRef(null);
+      useEffect(() => {
+        if (portaled) return;
+        const el = hostRef.current;
+        if (!el) return;
+        document.body.appendChild(el);
+        return () => { el.remove(); };
+      }, [portaled]);
+      const overlay = h("div", { ref: portaled ? undefined : hostRef, className: "af-overlay", onClick: (e) => { if (e.target === e.currentTarget) onClose(); } },
+        h(DetailCard, { item, detail, meta, loading, metaLoading, onClose }),
+      );
+      return portaled && typeof document !== "undefined" ? createPortal(overlay, document.body) : overlay;
+    }
+
+    function useOpenDetail() {
+      const [session, setSession] = useState(null);
+      const [pendingId, setPendingId] = useState("");
+      const cacheRef = React.useRef(new Map());
+      const inflightRef = React.useRef(new Map());
+      const load = (item) => {
+        const cached = cacheRef.current.get(item.id);
+        if (cached) return Promise.resolve(cached);
+        const inflight = inflightRef.current.get(item.id);
+        if (inflight) return inflight;
+        const req = api("detail", { id: item.id, refs: item.refs, title: item.title })
+          .catch(() => ({ title: item.title, cover: item.cover, groups: [] }))
+          .then((d) => {
+            cacheRef.current.set(item.id, d);
+            inflightRef.current.delete(item.id);
+            return d;
+          });
+        inflightRef.current.set(item.id, req);
+        return req;
+      };
+      const prefetch = (item) => { load(item); };
+      const loadMeta = (item, detail) => {
+        const bgmId = detail?.bgmId || item.bgmId;
+        if (!bgmId) return;
+        setSession((cur) => cur && cur.item.id === item.id ? { ...cur, metaLoading: true } : cur);
+        api("bangumiMeta", { bgmId })
+          .then((meta) => setSession((cur) => cur && cur.item.id === item.id ? { ...cur, meta, metaLoading: false } : cur))
+          .catch(() => setSession((cur) => cur && cur.item.id === item.id ? { ...cur, metaLoading: false } : cur));
+      };
+      const openItem = (item, ready) => {
+        if (ready && Array.isArray(ready.groups)) {
+          cacheRef.current.set(item.id, ready);
+          setPendingId("");
+          setSession({ item, detail: ready, loading: false, meta: null, metaLoading: false });
+          loadMeta(item, ready);
+          return;
+        }
+        const cached = cacheRef.current.get(item.id);
+        if (cached) {
+          setPendingId("");
+          setSession({ item, detail: cached, loading: false, meta: null, metaLoading: false });
+          loadMeta(item, cached);
+          return;
+        }
+        const seq = item.id;
+        setPendingId(seq);
+        setSession({ item, detail: null, loading: true, meta: null, metaLoading: !!item.bgmId });
+        if (item.bgmId) loadMeta(item, null);
+        load(item).then((d) => {
+          setPendingId((cur) => (cur === seq ? "" : cur));
+          setSession((cur) => cur && cur.item.id === seq ? { ...cur, detail: d, loading: false } : cur);
+          if (!item.bgmId) loadMeta(item, d);
+        });
+      };
+      return { session, pendingId, openItem, prefetch, close: () => setSession(null) };
+    }
+
+    function parseToolArgs(props) {
+      const block = props?.block;
+      const raw = (block && "kind" in block ? block.call?.argsRaw : block?.argsRaw) || "";
+      if (!raw || typeof raw !== "string") return {};
+      try { return JSON.parse(raw); } catch { return {}; }
+    }
+
+    function contentText(node) {
+      if (!node) return "";
+      if (typeof node === "string") return node;
+      if (Array.isArray(node)) return node.map(contentText).join("\n");
+      if (typeof node === "object") {
+        if (typeof node.text === "string") return node.text;
+        if (node.content) return contentText(node.content);
+      }
+      return "";
+    }
+
+    function httpCoverUrl(value) {
+      const url = String(value || "").trim();
+      return /^https?:\/\/\S+$/i.test(url) ? url : undefined;
+    }
+
+    // Keep the item regex in sync with SEARCH_ITEM_RE in src/search-text.ts.
+    function parseRenderedSearch(text) {
+      if (!text || typeof text !== "string") return null;
+      const items = [];
+      const re = /^\d+\.\s+(.+?)(?:\s+★([\d.]+))?\s+\[([^\]]+)\]\s*\n\s+id:\s+(\S+)(?:\s*\n\s+cover:\s+(\S+))?/gm;
+      let m;
+      while ((m = re.exec(text))) {
+        items.push({
+          id: m[4],
+          title: m[1].trim(),
+          score: m[2] ? Number(m[2]) : undefined,
+          sources: m[3].split(/[+/,]/).map((s) => s.trim()).filter(Boolean),
+          cover: httpCoverUrl(m[5]),
+        });
+      }
+      return items.length ? { kind: "anime-find-search", items } : null;
+    }
+
+    function pickPayload(props) {
+      const found = [];
+      const visit = (node, depth) => {
+        if (!node || depth > 6) return;
+        if (typeof node === "string") {
+          const t = node.trim();
+          if ((t.startsWith("{") || t.startsWith("[")) && t.length > 8) {
+            try { visit(JSON.parse(t), depth + 1); } catch { /* ignore */ }
+          }
+          const parsed = parseRenderedSearch(t);
+          if (parsed) found.push(parsed);
+          return;
+        }
+        if (typeof node !== "object") return;
+        if (Array.isArray(node)) {
+          for (const x of node) visit(x, depth + 1);
+          return;
+        }
+        if (Array.isArray(node.items) || Array.isArray(node.groups)) found.push(node);
+        for (const key of ["block", "meta", "result", "resultView", "view", "data", "value", "payload", "content", "message"]) {
+          if (node[key] != null) visit(node[key], depth + 1);
+        }
+      };
+      visit(props, 0);
+      const block = props?.block;
+      visit(block?.meta, 1);
+      visit(block?.content, 1);
+      visit(block?.resultView, 1);
+      visit(contentText(block?.content), 1);
+      return found.find((x) => Array.isArray(x.items) && x.items.length)
+        || found.find((x) => Array.isArray(x.groups) && x.groups.length)
+        || found[0]
+        || null;
+    }
+
+    function dedupTitle(animeTitle, lineName) {
+      const left = String(animeTitle || "").trim();
+      const right = String(lineName || "").trim();
+      if (!left) return right;
+      if (!right || left === right || left.includes(right)) return left;
+      if (right.includes(left)) return right;
+      return `${left} · ${right}`;
+    }
+
+    function StreamView({ items }) {
+      const [config, setConfig] = useState(null);
+      const [configError, setConfigError] = useState(false);
+      const [sources, setSources] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState("");
+      const [selected, setSelected] = useState(null);
+      const [episode, setEpisode] = useState(null);
+      const [qualities, setQualities] = useState([]);
+      const [quality, setQuality] = useState(0);
+      const [playError, setPlayError] = useState("");
+      const [resolving, setResolving] = useState(false);
+      const [videoReady, setVideoReady] = useState(false);
+      const [reverse, setReverse] = useState(false);
+      const videoRef = React.useRef(null);
+      const resolveSeqRef = React.useRef(0);
+      useEffect(() => {
+        let live = true;
+        setConfigError(false);
+        api("config", {}).then(
+          (data) => { if (live) setConfig(data); },
+          () => { if (live) setConfigError(true); },
+        );
+        return () => { live = false; };
+      }, []);
+      const retryConfig = () => {
+        // 重试重新进入 loading(config 置空),成功后恢复正常分支
+        setConfig(null);
+        setConfigError(false);
+        let live = true;
+        api("config", {}).then(
+          (data) => { if (live) setConfig(data); },
+          () => { if (live) setConfigError(true); },
+        );
+        return () => { live = false; };
+      };
+      useEffect(() => {
+        if (!config?.streamEnabled || !config.streamRules?.some((rule) => rule.enabled)) return;
+        let live = true;
+        setLoading(true); setError("");
+        api("streamSearch", { items: items.map((item) => ({ title: item.title, nameOrig: item.nameOrig })) })
+          .then((data) => { if (live) setSources(data.sources || []); })
+          .catch((e) => { if (live) setError(e.message || "解析可播源失败"); })
+          .finally(() => { if (live) setLoading(false); });
+        return () => { live = false; };
+      }, [config?.streamEnabled, JSON.stringify(config?.streamRules || []), (items || []).map((item) => item.id).join(",")]);
+      const chooseEpisode = async (nextSource, nextEpisode) => {
+        if (resolving) return; // 解析期间防重复点击
+        const seq = ++resolveSeqRef.current; // 连续切集时忽略过期响应
+        setResolving(true);
+        setSelected(nextSource); setEpisode(nextEpisode); setQualities([]); setQuality(0); setPlayError("");
+        try {
+          const data = await api("streamResolve", { source: nextSource, episode: nextEpisode });
+          if (seq !== resolveSeqRef.current) return;
+          setQualities(data.qualities || []); setQuality(0);
+        } catch (e) {
+          if (seq !== resolveSeqRef.current) return;
+          setPlayError(e.message || "无法解析该集播放地址");
+        } finally {
+          if (seq === resolveSeqRef.current) setResolving(false);
+        }
+      };
+      const chooseSource = (nextSource) => {
+        if (resolving) return;
+        if (nextSource.episodes?.length) return chooseEpisode(nextSource, nextSource.episodes[0]);
+        setSelected(nextSource); setEpisode(null); setQualities([]); setQuality(0); setPlayError("");
+      };
+      const switchSource = () => {
+        if (resolving) return;
+        const alternative = sources.find((source) => source.id !== selected?.id && source.episodes?.length);
+        if (alternative) chooseSource(alternative);
+        else setPlayError("没有更多可用播放源；可在源站打开或切回资源标签使用磁力。");
+      };
+      const ordered = selected ? [...selected.episodes].sort((a, b) => reverse ? b.name.localeCompare(a.name, "zh") : a.name.localeCompare(b.name, "zh")) : [];
+      const episodeIndex = episode ? ordered.findIndex((item) => item.id === episode.id) : -1;
+      const previousEpisode = episodeIndex > 0 ? ordered[episodeIndex - 1] : null;
+      const nextEpisode = episodeIndex >= 0 && episodeIndex < ordered.length - 1 ? ordered[episodeIndex + 1] : null;
+      const currentQuality = qualities[quality];
+      const currentUrl = currentQuality?.url;
+      const isHls = currentQuality?.format === "hls";
+      useEffect(() => { setVideoReady(false); }, [currentUrl]);
+      useEffect(() => {
+        const video = videoRef.current;
+        if (!video || !currentUrl || !isHls) return;
+        let instance;
+        const attach = () => {
+          if (!window.Hls?.isSupported?.()) return;
+          video.removeAttribute("src");
+          video.load();
+          instance = new window.Hls();
+          instance.loadSource(pluginUrl(currentUrl));
+          instance.attachMedia(video);
+          instance.on(window.Hls.Events.MANIFEST_PARSED, () => setVideoReady(true));
+          instance.on(window.Hls.Events.ERROR, (_event, data) => { if (data?.fatal) { setVideoReady(false); setPlayError("HLS 播放器无法加载该集；可尝试换源或在源站打开。"); } });
+        };
+        if (window.Hls) attach();
+        else {
+          const script = document.createElement("script");
+          script.src = pluginUrl("/plugins/anime-find/hls.min.js");
+          script.onload = attach;
+          script.onerror = () => setPlayError("无法加载内置 HLS 播放器；请尝试换源或在源站打开。");
+          document.head.appendChild(script);
+          return () => { script.remove(); instance?.destroy?.(); };
+        }
+        return () => instance?.destroy?.();
+      }, [currentUrl, isHls]);
+      if (configError) return h("div", { className: "af-stream-empty", role: "alert" },
+        "无法读取流媒体设置，请稍后重试。",
+        h("button", { type: "button", className: "af-mini primary", "data-testid": "stream-config-retry", onClick: retryConfig }, "重试"),
+      );
+      if (!config) return h(LoadingBody, { text: "正在读取流媒体设置…" });
+      if (!config.streamEnabled) return h("div", { className: "af-stream-empty" }, "流媒体功能当前关闭。开启后仅导入你有权使用的规则。 ", h("a", { className: "af-more-link", href: pluginUrl("/settings/plugins") }, "打开插件设置"));
+      if (!config.streamRules?.some((rule) => rule.enabled)) return h("div", { className: "af-stream-empty" }, "尚未启用流媒体规则。粘贴兼容的静态 CSS 或受限 XPath 子集规则。 ", h("a", { className: "af-more-link", href: pluginUrl("/settings/plugins") }, "打开插件设置"));
+      return h("div", null,
+        h("div", { className: "af-stream-note" }, `流媒体已开启 · ${config.streamRules.filter((rule) => rule.enabled).length} 条规则启用中。选集已按可播放线路过滤。`),
+        loading ? h(LoadingBody, { text: "正在按当前搜索结果解析可播源…" }) : null,
+        error ? h("div", { className: "af-err" }, error) : null,
+        config.streamRules.some((rule) => rule.enabled && rule.useWebview) ? h("div", { className: "af-cfg-warning" }, "部分已启用规则依赖 WebView，当前 Web 插件会跳过它们；请改用静态 CSS 或受限 XPath 规则。") : null,
+        !loading && !error && !sources.length ? h("div", { className: "af-stream-empty" },
+          "当前结果没有可展示的可播源。解析失败的源不会显示；可调整规则后重试。 ",
+          h("a", { className: "af-more-link", href: pluginUrl("/settings/plugins") }, "打开插件设置"),
+        ) : null,
+        h("div", { className: "af-stream-grid" }, sources.map((source) => {
+          const limited = source.status === "limited";
+          const active = selected?.id === source.id;
+          return h("button", {
+            key: source.id, type: "button", "data-testid": "stream-source-card",
+            className: "af-stream-card" + (active ? " on" : ""),
+            disabled: resolving,
+            onClick: () => chooseSource(source),
+          },
+          h("div", { className: "af-stream-card-top" },
+            h("div", { className: "af-stream-card-id" },
+              h("div", { className: "af-stream-title", title: source.animeTitle }, source.animeTitle),
+              h("div", { className: "af-stream-rule", title: `${source.ruleName} · ${source.lineName}` }, `${source.ruleName} · ${source.lineName}`),
+            ),
+            h("span", { className: "af-stream-state" + (limited ? " limited" : "") }, source.episodes.length ? (limited ? "部分集受限" : "可播放") : "暂无可播集"),
+          ),
+          h("div", { className: "af-stream-facts" }, source.episodes.length ? `${source.format === "hls" ? "HLS" : source.format === "mp4" ? "MP4" : "未知格式"} · ${source.episodes.length} 集 · ${source.lineName}` : "当前源没有可播放剧集"),
+          h("div", { className: "af-stream-card-foot" },
+            h("span", null, active ? "当前播放源" : source.episodes.length ? "已解析选集" : "查看可播状态"),
+            h("span", { className: "af-stream-card-go" }, active ? "已选中" : "选集播放 ›"),
+          ));
+        })),
+        selected ? h("section", { className: "af-player-panel" },
+          h("div", { className: "af-player-head" }, dedupTitle(selected.animeTitle, selected.lineName)),
+          h("div", { className: "af-player-actions" },
+            h("button", { type: "button", className: "af-mini", onClick: () => setReverse(!reverse) }, reverse ? "正序" : "倒序"),
+            h("button", {
+              type: "button", className: "af-mini", "data-testid": "stream-previous-episode",
+              disabled: !previousEpisode || resolving, onClick: () => { if (previousEpisode) chooseEpisode(selected, previousEpisode); },
+            }, "上一集"),
+            h("button", {
+              type: "button", className: "af-mini", "data-testid": "stream-next-episode",
+              disabled: !nextEpisode || resolving, onClick: () => { if (nextEpisode) chooseEpisode(selected, nextEpisode); },
+            }, "下一集"),
+            qualities.length > 1 ? h("select", { value: quality, disabled: resolving, onChange: (e) => setQuality(Number(e.target.value)) },
+              qualities.map((item, index) => h("option", { key: item.url, value: index }, item.label)),
+            ) : null,
+            episode ? h("a", { className: "af-mini", href: episode.pageUrl, target: "_blank", rel: "noreferrer" }, "在源站打开") : null,
+            h("button", { type: "button", className: "af-mini" + (!selected.episodes.length ? " primary" : ""), disabled: resolving, onClick: switchSource }, "换一个源"),
+          ),
+          selected.episodes.length
+            ? h("div", { className: "af-episodes" }, ordered.map((item) => h("button", { key: item.id, type: "button", "data-testid": "stream-episode", className: "af-episode" + (episode?.id === item.id ? " on" : ""), disabled: resolving, onClick: () => chooseEpisode(selected, item) }, item.name)))
+            : h("div", { className: "af-player-empty" },
+              h("b", null, "当前源没有可播放的剧集"),
+              "已隐藏无法通过媒体校验的选集。请换一个源后重试。",
+              h("div", null, h("button", { type: "button", className: "af-mini primary", disabled: resolving, onClick: switchSource }, "换一个源")),
+            ),
+          h("div", { className: "af-video-wrap" },
+            currentUrl
+              ? h("video", {
+                  ref: videoRef, className: "af-video", src: isHls ? undefined : pluginUrl(currentUrl), controls: true, autoPlay: true,
+                  onCanPlay: () => setVideoReady(true),
+                  onError: () => { setVideoReady(false); setPlayError("播放器无法加载该集，可能受源站限制。你可以换源或在源站打开。"); },
+                })
+              : resolving
+                ? h("div", { className: "af-video-holder", role: "status", "aria-live": "polite" },
+                    h("span", { className: "af-spin-inline", "aria-hidden": "true" }),
+                    h("span", null, "正在解析播放地址…"),
+                  )
+                : null,
+            currentUrl && !videoReady && !playError
+              ? h("div", { className: "af-video-mask", role: "status", "aria-live": "polite" },
+                  h("span", { className: "af-spin-inline", "aria-hidden": "true" }),
+                  h("span", null, "正在缓冲视频…"),
+                )
+              : null,
+          ),
+          playError ? h("div", { className: "af-player-error" }, playError) : (!currentUrl && !resolving) ? h("div", { className: "af-player-error" }, "选择剧集以解析播放地址。") : null,
+        ) : null,
+      );
+    }
+
+    function SearchToolView(props) {
+      useEffect(() => ensureCss(), []);
+      const payload = pickPayload(props);
+      const args = parseToolArgs(props);
+      const query = String(payload?.query || args.query || "").trim();
+      const fromTool = Array.isArray(payload?.items) && payload.items.length ? payload.items : null;
+      const running = !!(props?.block && !("kind" in props.block));
+      const [fetched, setFetched] = useState(null);
+      const [fetching, setFetching] = useState(false);
+      const [err, setErr] = useState("");
+      const [tab, setTab] = useState("resources");
+      const { session, pendingId, openItem, prefetch, close } = useOpenDetail();
+      useEffect(() => {
+        if (fromTool || running || query.length < 2) return;
+        let live = true;
+        setFetching(true);
+        api("search", { query })
+          .then((d) => { if (live) setFetched(d.items || []); })
+          .catch((e) => { if (live) { setFetched([]); setErr(e.message || String(e)); } })
+          .finally(() => { if (live) setFetching(false); });
+        return () => { live = false; };
+      }, [query, running, !!fromTool]);
+      const items = fromTool || fetched || [];
+      // 工具执行中(running)或会话恢复后客户端二次拉取期间,不再返回空白
+      if (running) return h("div", { className: "af-root af-tool" },
+        h(LoadingBody, { text: query ? `正在搜索${query}…` : "正在搜索…" }),
+      );
+      if (!items.length) {
+        if (err) return h("div", { className: "af-root af-tool" }, h("div", { className: "af-err" }, err));
+        if (fetching) return h("div", { className: "af-root af-tool" },
+          h(LoadingBody, { text: query ? `正在搜索${query}…` : "正在搜索…" }),
+        );
+        return null;
+      }
+      return h("div", { className: "af-root af-tool" },
+        h("div", { className: "af-search-tabs", role: "tablist" },
+          h("button", { type: "button", role: "tab", "data-testid": "resource-tab", className: "af-search-tab" + (tab === "resources" ? " on" : ""), "aria-selected": tab === "resources", onClick: () => setTab("resources") }, "资源"),
+          h("button", { type: "button", role: "tab", "data-testid": "stream-tab", className: "af-search-tab" + (tab === "stream" ? " on" : ""), "aria-selected": tab === "stream", onClick: () => setTab("stream") }, "流媒体"),
+        ),
+        tab === "resources" ? [
+          h("div", { key: "hint", className: "af-hint" }, `点击卡片查看磁力 · ${items.length} 条`),
+          h(Cards, { key: "cards", items, pendingId, onOpen: openItem, onPrefetch: prefetch }),
+        ] : h(StreamView, { items }),
+        session ? h(Drawer, { item: session.item, detail: session.detail, meta: session.meta, loading: !!session.loading, metaLoading: !!session.metaLoading, onClose: close }) : null,
+      );
+    }
+
+    function DetailToolView(props) {
+      useEffect(() => ensureCss(), []);
+      const payload = pickPayload(props);
+      const args = parseToolArgs(props);
+      const id = String(payload?.id || args.id || "").trim();
+      const fromTool = payload && (payload.groups || payload.title) ? payload : null;
+      const item = {
+        id: fromTool?.id || id,
+        title: fromTool?.title || id,
+        cover: fromTool?.cover,
+        score: fromTool?.score,
+        bgmId: fromTool?.bgmId,
+        sources: fromTool?.sources,
+        refs: fromTool?.refs,
+      };
+      const running = !!(props?.block && !("kind" in props.block));
+      const { session, pendingId, openItem, prefetch, close } = useOpenDetail();
+      const ready = fromTool && Array.isArray(fromTool.groups) ? fromTool : null;
+      // 工具执行中不再返回空白;payload 已就绪时直接走下方正常渲染
+      if (running) return h("div", { className: "af-root af-tool" },
+        h(LoadingBody, { text: "正在读取详情…" }),
+      );
+      if (!item.id) return null;
+      return h("div", { className: "af-root af-tool" },
+        h("div", { className: "af-hint" }, "点击卡片查看字幕组与磁力"),
+        h(Cards, { items: [item], pendingId, onOpen: (it) => openItem(it, ready || undefined), onPrefetch: prefetch }),
+        session ? h(Drawer, { item: session.item, detail: session.detail, meta: session.meta, loading: !!session.loading, metaLoading: !!session.metaLoading, onClose: close }) : null,
+      );
+    }
+
+    function ChevronDown({ className }) {
+      return h("svg", {
+        className,
+        width: 14,
+        height: 14,
+        viewBox: "0 0 14 14",
+        fill: "none",
+        xmlns: "http://www.w3.org/2000/svg",
+        "aria-hidden": "true",
+      }, h("path", {
+        d: "M11.8486 5.5L11.4238 5.92383L8.69727 8.65137C8.44157 8.90706 8.21562 9.13382 8.01172 9.29785C7.79912 9.46883 7.55595 9.61756 7.25 9.66602C7.08435 9.69222 6.91565 9.69222 6.75 9.66602C6.44405 9.61756 6.20088 9.46883 5.98828 9.29785C5.78438 9.13382 5.55843 8.90706 5.30273 8.65137L2.57617 5.92383L2.15137 5.5L3 4.65137L3.42383 5.07617L6.15137 7.80273C6.42595 8.07732 6.59876 8.24849 6.74023 8.3623C6.87291 8.46904 6.92272 8.47813 6.9375 8.48047C6.97895 8.48703 7.02105 8.48703 7.0625 8.48047C7.07728 8.47813 7.12709 8.46904 7.25977 8.3623C7.40124 8.24849 7.57405 8.07732 7.84863 7.80273L10.5762 5.07617L11 4.65137L11.8486 5.5Z",
+        fill: "currentColor",
+      }));
+    }
+
+    const SOURCE_OPTS = [
+      { id: "mikan", label: "Mikan" },
+      { id: "anibt", label: "AniBT" },
+      { id: "garden", label: "AnimeGarden" },
+    ];
+
+    const DEFAULT_STREAM_RULES = [
+      {
+        id: "xfdm",
+        name: "xfdm（试点源）",
+        enabled: true,
+        baseURL: "https://dm1.xfdm.pro",
+        searchURL: "/search.html?wd={{keyword}}",
+        searchList: "div.public-list-box.search-box",
+        searchName: ".thumb-txt",
+        searchResult: "a.public-list-exp",
+        chapterRoads: "ul.anthology-list-play li",
+        chapterResult: "a",
+        chapterName: "a",
+        playURL: "script:player_aaaa.url",
+        mediaHosts: ["xfvod.pro", "moedot.net", "pan.wo.cn"],
+        mediaHeaders: {
+          "moedot.net": { referer: "" },
+          "pan.wo.cn": { referer: "" },
+        },
+      },
+    ];
+
+    function emptyDraft() {
+      return {
+        sources: ["mikan"],
+        maxResults: 12,
+        timeoutMs: 20000,
+        mikanHost: "https://mikanani.me",
+        anibtHost: "https://anibt.net",
+        gardenHost: "https://api.animes.garden",
+        streamEnabled: true,
+        streamRules: DEFAULT_STREAM_RULES,
+        streamRulesText: JSON.stringify(DEFAULT_STREAM_RULES, null, 2),
+      };
+    }
+
+    function installSourceLabel(metadata) {
+      const source = metadata?.installSource;
+      if (source === "npm") return `安装来源 · ${metadata.installReference || "npm:anime-find"}`;
+      if (source === "github") return `安装来源 · ${metadata.installReference || "github:cocofhu/anime-find"}`;
+      if (source === "local") return `安装来源 · ${metadata.installReference || "本地 link/file"}`;
+      return "安装来源 · 未识别";
+    }
+
+    function VersionBlock({ metadata, result, checking, updating, onCheck, onApply }) {
+      const currentVersion = metadata?.currentVersion || "—";
+      const status = updating ? "updating" : checking ? "checking" : result?.status;
+      const showCompare = status === "updateAvailable" || status === "localInstallRestricted";
+      const showCommand = status === "updateAvailable";
+      return h("div", { className: "af-cfg-f" },
+        h("label", null, "版本与更新"),
+        h("div", { className: "af-version" },
+          h("div", { className: "af-version-head" },
+            h("div", null,
+              h("div", { className: "af-version-k" }, "当前版本"),
+              h("div", { className: "af-version-v" }, currentVersion),
+              h("span", { className: "af-version-tag", title: metadata?.installReference || "" }, installSourceLabel(metadata)),
+            ),
+            h("button", { type: "button", className: "af-update-check", disabled: checking, onClick: onCheck }, checking ? "检查中…" : "检查更新"),
+          ),
+          status ? h("div", { className: "af-update-status " + status, role: "status", "aria-live": "polite" },
+            updating
+              ? [
+                  h("span", { key: "spin", className: "af-spin-inline", "aria-hidden": "true" }),
+                  h("span", { key: "text" }, "正在执行官方更新并拉起新的 dsh web…"),
+                ]
+              : checking
+                ? [
+                    h("span", { key: "spin", className: "af-spin-inline", "aria-hidden": "true" }),
+                    h("span", { key: "text" }, "正在查询 GitHub 正式 Release…"),
+                  ]
+                : result?.message,
+          ) : null,
+          showCompare ? h("div", { className: "af-update-compare" },
+            h("div", { className: "af-update-pill" }, h("span", null, "本地"), h("strong", null, currentVersion)),
+            h("div", { className: "af-update-arrow", "aria-hidden": "true" }, "→"),
+            h("div", { className: "af-update-pill" }, h("span", null, "最新正式版"), h("strong", null, result.latestVersion || "—")),
+          ) : null,
+          showCommand ? [
+            h("div", { key: "label", className: "af-update-cmd-label" }, "官方更新命令"),
+            h("div", { key: "command", className: "af-update-cmd" }, result.updateCommand),
+            h("div", { key: "actions", className: "af-update-actions" },
+              h("button", { type: "button", className: "af-update-copy", disabled: updating, onClick: onApply },
+                updating
+                  ? h("span", { className: "af-update-busy" },
+                      h("span", { className: "af-spin-inline", "aria-hidden": "true" }),
+                      "更新中…",
+                    )
+                  : "更新",
+              ),
+            ),
+            h("p", { key: "restart", className: "af-update-restart" }, "确认后将自动执行更新并重启 dsh web，随后跳转到新的服务地址。"),
+          ] : status === "localInstallRestricted" ? h("p", { className: "af-update-restart" }, "本地 link/file 安装请自行同步源码并重启 dsh web；请勿执行官方 update，以免破坏开发环境。") : null,
+        ),
+        h("p", { className: "af-cfg-hint" }, "仅在点击「检查更新」时查询 GitHub 正式 Release（忽略预发布与草稿）；不自动检查。"),
+      );
+    }
+
+    function ConfigCard() {
+      useEffect(() => ensureCss(), []);
+      const [saved, setSaved] = useState(emptyDraft);
+      const [draft, setDraft] = useState(emptyDraft);
+      const [loading, setLoading] = useState(true);
+      const [loadError, setLoadError] = useState("");
+      const [saving, setSaving] = useState(false);
+      const [err, setErr] = useState("");
+      const [open, setOpen] = useState(false);
+      const [metadata, setMetadata] = useState(null);
+      const [updateResult, setUpdateResult] = useState(null);
+      const [checkingUpdate, setCheckingUpdate] = useState(false);
+      const [applyingUpdate, setApplyingUpdate] = useState(false);
+      const [confirmUpdateOpen, setConfirmUpdateOpen] = useState(false);
+      const [updateToast, setUpdateToast] = useState("");
+      const [ruleWarnings, setRuleWarnings] = useState([]);
+      const applyConfig = (d) => {
+        const next = {
+          sources: Array.isArray(d.sources) && d.sources.length ? d.sources : ["mikan"],
+          maxResults: d.maxResults || 12,
+          timeoutMs: d.timeoutMs || 20000,
+          mikanHost: d.mikanHost || "https://mikanani.me",
+          anibtHost: d.anibtHost || "https://anibt.net",
+          gardenHost: d.gardenHost || "https://api.animes.garden",
+          streamEnabled: d.streamEnabled === true,
+          streamRules: Array.isArray(d.streamRules) ? d.streamRules : [],
+          streamRulesText: JSON.stringify(Array.isArray(d.streamRules) ? d.streamRules : [], null, 2),
+        };
+        setSaved(next);
+        setDraft(next);
+        setMetadata({
+          currentVersion: d.currentVersion,
+          installSource: d.installSource,
+          installReference: d.installReference,
+          updateCommand: d.updateCommand,
+        });
+        setLoading(false);
+      };
+      useEffect(() => {
+        let live = true;
+        api("config", {})
+          .then((d) => { if (live) applyConfig(d); })
+          .catch((e) => { if (live) { setLoading(false); setLoadError(e.message || String(e)); } });
+        return () => { live = false; };
+      }, []);
+      const retryLoad = () => {
+        // 重试重新进入 loading 态,成功后恢复表单
+        setLoadError("");
+        setLoading(true);
+        let live = true;
+        api("config", {})
+          .then((d) => { if (live) applyConfig(d); })
+          .catch((e) => { if (live) { setLoading(false); setLoadError(e.message || String(e)); } });
+        return () => { live = false; };
+      };
+      const dirty = !!(draft && saved && JSON.stringify(draft) !== JSON.stringify(saved));
+      const toggleSource = (id) => {
+        if (!draft) return;
+        const on = draft.sources.includes(id);
+        const sources = on ? draft.sources.filter((s) => s !== id) : [...draft.sources, id];
+        if (!sources.length) return;
+        setDraft({ ...draft, sources });
+      };
+      const parsedRules = useMemo(() => {
+        try {
+          const rules = JSON.parse(draft.streamRulesText || "[]");
+          return Array.isArray(rules) ? rules : [];
+        } catch { return []; }
+      }, [draft.streamRulesText]);
+      const setRules = (rules) => setDraft({ ...draft, streamRules: rules, streamRulesText: JSON.stringify(rules, null, 2) });
+      const toggleRule = (index) => setRules(parsedRules.map((rule, i) => i === index ? { ...rule, enabled: !rule.enabled } : rule));
+      const deleteRule = (index) => setRules(parsedRules.filter((_rule, i) => i !== index));
+      const save = async () => {
+        if (!draft) return;
+        setSaving(true);
+        setErr("");
+        try {
+          let streamRules;
+          try { streamRules = JSON.parse(draft.streamRulesText || "[]"); } catch { throw new Error("流媒体规则必须是有效的 JSON 数组"); }
+          if (!Array.isArray(streamRules)) throw new Error("流媒体规则必须是 JSON 数组");
+          const warnings = [];
+          for (const rule of streamRules) {
+            const result = await api("streamValidate", { rule });
+            if (result.warning) warnings.push(`${result.rule?.name || rule.name || "未命名规则"}：${result.warning}`);
+          }
+          const d = await api("config", { save: true, ...draft, streamRules });
+          const next = {
+            sources: d.sources || draft.sources,
+            maxResults: d.maxResults,
+            timeoutMs: d.timeoutMs,
+            mikanHost: d.mikanHost,
+            anibtHost: d.anibtHost,
+            gardenHost: d.gardenHost,
+            streamEnabled: d.streamEnabled === true,
+            streamRules: d.streamRules || [],
+            streamRulesText: JSON.stringify(d.streamRules || [], null, 2),
+          };
+          setSaved(next);
+          setDraft(next);
+          setRuleWarnings(warnings);
+        } catch (e) {
+          setErr(e.message || String(e));
+        } finally {
+          setSaving(false);
+        }
+      };
+      const checkUpdate = async () => {
+        if (checkingUpdate) return;
+        setCheckingUpdate(true);
+        setUpdateResult(null);
+        try {
+          const result = await api("checkUpdate", {});
+          setMetadata((current) => ({ ...current, ...result }));
+          setUpdateResult(result);
+        } catch {
+          setUpdateResult({
+            status: "failed",
+            message: "检查失败：无法连接 GitHub 或查询出错，请稍后重试。",
+          });
+        } finally {
+          setCheckingUpdate(false);
+        }
+      };
+      const requestApplyUpdate = () => {
+        if (applyingUpdate) return;
+        setConfirmUpdateOpen(true);
+      };
+      const cancelApplyUpdate = () => {
+        if (applyingUpdate) return;
+        setConfirmUpdateOpen(false);
+      };
+      const confirmApplyUpdate = async () => {
+        if (applyingUpdate) return;
+        setApplyingUpdate(true);
+        setUpdateToast("");
+        try {
+          const result = await api("applyUpdate", {});
+          if (!result.newUrl) throw new Error("更新已完成，但没有收到新的 dsh web 地址。");
+          window.location.assign(result.newUrl);
+        } catch (e) {
+          setConfirmUpdateOpen(false);
+          setUpdateToast(e.message || "自动更新失败，请稍后重试。");
+        } finally {
+          setApplyingUpdate(false);
+        }
+      };
+      return h("li", { className: "af-cfg-item" },
+        h("details", {
+          className: "af-cfg",
+          open,
+          onToggle: (e) => setOpen(e.currentTarget.open),
+        },
+          h("summary", { className: "af-cfg-h" },
+            h("span", { className: "af-cfg-t" },
+              h("span", { className: "af-cfg-n" }, "搜番"),
+              h("span", { className: "af-cfg-d" }, "搜索源、结果数量与站点地址。默认仅 Mikan。"),
+            ),
+            dirty ? h("span", { className: "af-tag orange" }, "未保存") : null,
+            h(ChevronDown, { className: "af-cfg-ch" + (open ? " af-cfg-ch-open" : "") }),
+          ),
+          h("div", { className: "af-cfg-b", "aria-busy": saving ? "true" : undefined },
+            // 首次读取期间显示 loading 占位且不渲染可编辑表单;失败显示错误+重试
+            loading
+              ? h(LoadingBody, { text: "正在读取设置…" })
+              : loadError
+                ? h("div", { className: "af-cfg-f", role: "alert" },
+                    h("label", null, "设置读取失败"),
+                    h("p", { className: "af-cfg-err" }, loadError),
+                    h("div", null, h("button", { type: "button", className: "af-mini primary", "data-testid": "config-load-retry", onClick: retryLoad }, "重试")),
+                  )
+                : h(React.Fragment, null,
+            h("div", { className: "af-cfg-f" },
+              h("label", null, "搜索源"),
+              h("div", { className: "af-cfg-src" },
+                SOURCE_OPTS.map((s) => h("label", { key: s.id },
+                  h("input", {
+                    type: "checkbox",
+                    checked: draft.sources.includes(s.id),
+                    disabled: saving,
+                    onChange: () => toggleSource(s.id),
+                  }),
+                  s.label,
+                )),
+              ),
+              h("p", { className: "af-cfg-hint" }, "至少保留一个。本季新番按主机时钟拉 Mikan 当季列表；AniBT 可补充评分。"),
+            ),
+            h("div", { className: "af-cfg-f" },
+              h("label", { htmlFor: "af-max" }, "搜索结果上限"),
+              h("input", {
+                id: "af-max",
+                type: "number",
+                min: 1,
+                max: 80,
+                value: draft.maxResults,
+                disabled: saving,
+                onChange: (e) => setDraft({ ...draft, maxResults: Number(e.target.value) || 12 }),
+              }),
+            ),
+            h("div", { className: "af-cfg-f" },
+              h("label", { htmlFor: "af-mikan" }, "Mikan 站点"),
+              h("input", {
+                id: "af-mikan",
+                type: "text",
+                value: draft.mikanHost,
+                disabled: saving,
+                onChange: (e) => setDraft({ ...draft, mikanHost: e.target.value }),
+              }),
+              h("p", { className: "af-cfg-hint" }, "默认 https://mikanani.me，可换成镜像。"),
+            ),
+            h("div", { className: "af-cfg-f" },
+              h("label", { htmlFor: "af-anibt" }, "AniBT 站点"),
+              h("input", {
+                id: "af-anibt",
+                type: "text",
+                value: draft.anibtHost,
+                disabled: saving,
+                onChange: (e) => setDraft({ ...draft, anibtHost: e.target.value }),
+              }),
+            ),
+            h("div", { className: "af-cfg-f" },
+              h("label", { htmlFor: "af-garden" }, "AnimeGarden API"),
+              h("input", {
+                id: "af-garden",
+                type: "text",
+                value: draft.gardenHost,
+                disabled: saving,
+                onChange: (e) => setDraft({ ...draft, gardenHost: e.target.value }),
+              }),
+            ),
+            h("div", { className: "af-cfg-f" },
+              h("label", null, "在线播放（默认开启）"),
+              h("label", { className: "af-cfg-src" },
+                h("input", { type: "checkbox", checked: !!draft.streamEnabled, disabled: saving, onChange: () => setDraft({ ...draft, streamEnabled: !draft.streamEnabled }) }),
+                "启用流媒体",
+              ),
+              h("p", { className: "af-cfg-hint" }, "仅访问你有权观看的内容，并遵守源站条款。默认内置一条静态试点规则，可关闭或替换。首期支持静态 CSS、受限 XPath 与 script: 取址，不支持 WebView 拦截。"),
+            ),
+            h("div", { className: "af-cfg-f" },
+              h("label", { htmlFor: "af-stream-rules" }, "流媒体规则 JSON"),
+              h("textarea", {
+                id: "af-stream-rules", rows: 8, value: draft.streamRulesText, disabled: saving,
+                style: { width: "100%", fontFamily: "ui-monospace,monospace", fontSize: "12px", borderRadius: "8px", padding: "8px", color: "inherit", background: "var(--dsw-alias-bg-layer-3)", border: "1px solid var(--dsw-alias-border-l2)" },
+                onChange: (e) => setDraft({ ...draft, streamRulesText: e.target.value }),
+              }),
+              h("p", { className: "af-cfg-hint" }, "每项需包含 name、baseURL、searchURL、searchList、searchName、searchResult、chapterRoads、chapterResult；可用 playURL: script:player_aaaa.url 与 mediaHosts。保存前会校验。"),
+              parsedRules.length ? h("div", { className: "af-rule-list" }, parsedRules.map((rule, index) => h("div", { className: "af-rule-row", key: rule.id || `${rule.name}-${index}` },
+                h("label", null, h("input", { type: "checkbox", checked: rule.enabled !== false, disabled: saving, onChange: () => toggleRule(index) }), rule.name || `未命名规则 ${index + 1}`),
+                h("button", { type: "button", className: "af-mini af-rule-delete", disabled: saving, onClick: () => deleteRule(index) }, "删除"),
+              ))) : null,
+              ruleWarnings.map((warning) => h("p", { className: "af-cfg-warning", key: warning }, warning)),
+            ),
+            h(VersionBlock, { metadata, result: updateResult, checking: checkingUpdate, updating: applyingUpdate, onCheck: checkUpdate, onApply: requestApplyUpdate }),
+            h("div", { className: "af-cfg-ft" },
+              err ? h("p", { className: "af-cfg-err" }, err) : null,
+              h("button", { type: "button", className: "af-cfg-disc", disabled: !dirty || saving, onClick: () => setDraft(saved) }, "放弃修改"),
+              h("button", { type: "button", className: "af-cfg-save", disabled: !dirty || saving, "aria-busy": saving || undefined, onClick: save },
+                saving ? h(InlineBusy, { text: "保存中…" }) : "保存"),
+            ),
+                ),
+          ),
+        ),
+        h(UpdateConfirmDialog, {
+          open: confirmUpdateOpen,
+          command: updateResult?.updateCommand || metadata?.updateCommand,
+          busy: applyingUpdate,
+          onCancel: cancelApplyUpdate,
+          onConfirm: confirmApplyUpdate,
+        }),
+        updateToast ? h(Toast, { text: updateToast, onDone: () => setUpdateToast("") }) : null,
+      );
+    }
+
+    const inject = ["slots"];
+    function apply(ctx) {
+      const slots = ctx.get("slots");
+      if (!slots) return;
+      ctx.effect(() => ensureCss(), "anime-find-style");
+      slots.inject("tool.call.toolview", () => slots.register(
+        { name: "tool.call.toolview", key: "anime_find_search" },
+        SearchToolView,
+      ));
+      slots.inject("tool.call.toolview", () => slots.register(
+        { name: "tool.call.toolview", key: "anime_find_detail" },
+        DetailToolView,
+      ));
+      // list slot wants id (older DSH); keyed slot wants key (rc7+). Register both.
+      slots.inject("settings.plugin.item", () => slots.register(
+        { name: "settings.plugin.item", id: "anime-find", key: "anime-find", order: 30 },
+        ConfigCard,
+      ));
+    }
+
+    return { inject, apply, SearchToolView, DetailToolView };
+  },
+});
